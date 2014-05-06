@@ -998,6 +998,41 @@ class Client(local):
                 server.mark_dead(msg)
         return retvals
 
+    def gets_multi(self, keys, key_prefix=''):
+        self._statlog('gets_multi')
+
+        server_keys, prefixed_to_orig_key = self._map_and_prefix_keys(keys, key_prefix)
+
+        # send out all requests on each server before reading anything
+        dead_servers = []
+        for server in server_keys.iterkeys():
+            try:
+                server.send_cmd("gets %s" % " ".join(server_keys[server]))
+            except socket.error, msg:
+                if isinstance(msg, tuple): msg = msg[1]
+                server.mark_dead(msg)
+                dead_servers.append(server)
+
+        # if any servers died on the way, don't expect them to respond.
+        for server in dead_servers:
+            del server_keys[server]
+
+        retvals = {}
+        for server in server_keys.iterkeys():
+            try:
+                line = server.readline()
+                while line and line != 'END':
+                    rkey, flags, rlen, cas = self._expect_cas_value(server, line)
+                    #  Bo Yang reports that this can sometimes be None
+                    if rkey is not None:
+                        val = self._recv_value(server, flags, rlen)
+                        retvals[prefixed_to_orig_key[rkey]] = val   # un-prefix returned key.
+                    line = server.readline()
+            except (_Error, socket.error), msg:
+                if isinstance(msg, tuple): msg = msg[1]
+                server.mark_dead(msg)
+        return retvals
+
     def _expect_cas_value(self, server, line=None, raise_exception=False):
         if not line:
             line = server.readline(raise_exception)
